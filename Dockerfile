@@ -12,15 +12,14 @@ RUN cd web && npm ci
 COPY web/ ./web/
 COPY server/ ./server/
 
-# 执行前端编译，生成静态文件输出到 server/web 目录
-RUN cd web && npm run build
+# 🔥 核心修正：不运行 "npm run build" (那会触发 tsc 类型检查报错)，
+# 直接通过 npx vite build 编译。Vite 插件会自动生成 routeTree.gen.ts 并完美打包！
+RUN cd web && npx vite build
 
 # ==========================================
-# 阶段 2: 后端编译 (🔥 升级至最新版 Golang 镜像)
+# 阶段 2: 后端编译 (使用最新版 Golang 镜像)
 # ==========================================
-# 使用 golang:alpine (不指定 1.21) 以获取最新的 Go 1.24/1.25 编译器，解决 go.mod 声明 1.25.0 导致的报错
 FROM golang:alpine AS backend-builder
-# 安装编译 Go 项目及 SQLite 驱动可能需要的工具包
 RUN apk add --no-cache gcc musl-dev git
 
 WORKDIR /app
@@ -36,9 +35,6 @@ COPY server/ ./server/
 COPY --from=frontend-builder /app/server/web ./server/web
 
 # 编译单二进制可执行文件
-# -tags ui : 开启 ui 编译标签，把刚才拷贝的前端静态文件使用 go:embed 直接打包嵌入二进制中
-# -trimpath : 移除编译后二进制里的本地文件路径信息
-# -ldflags "-s -w" : 压缩二进制体积，移除调试信息和符号表
 RUN cd server && \
     CGO_ENABLED=0 GOOS=linux go build \
     -tags ui \
@@ -50,22 +46,21 @@ RUN cd server && \
 # 阶段 3: 最终运行镜像 (使用极简 Alpine 镜像)
 # ==========================================
 FROM alpine:latest
-# 安装必要的系统证书及全球时区数据
 RUN apk add --no-cache ca-certificates tzdata
 
 WORKDIR /app
 
-# 从构建阶段 (backend-builder) 拷贝最终编译好的单文件可执行程序
+# 从构建阶段拷贝最终编译好的单文件可执行程序
 COPY --from=backend-builder /app/server/ovh-server .
 
-# 创建数据挂载目录，用于存放 SQLite 数据库 (data/sniper.db) 和应用日志
+# 创建数据挂载目录
 RUN mkdir -p /app/data
 
-# 暴露容器内部监听的端口 (后端默认端口)
+# 暴露端口
 EXPOSE 19998
 
-# 将数据目录声明为匿名卷，防止容器重建时数据丢失
+# 数据持久化挂载
 VOLUME ["/app/data"]
 
-# 容器启动运行命令
+# 启动命令
 CMD ["./ovh-server"]
