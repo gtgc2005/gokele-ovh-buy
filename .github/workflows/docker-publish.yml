@@ -1,36 +1,60 @@
-# 工作流的名称，会在 GitHub 仓库的 Actions 界面显示
-name: 自动构建并推送 Docker 镜像
+name: Build and Push Docker Image
 
-# 定义触发工作流的条件
 on:
   push:
     branches:
-      - main     # 当代码被推送 (Push) 到 main 分支时触发构建
+      - main
     tags:
-      - 'v*'     # 当推送符合版本格式的标签（如 v1.0.0, v2.1.3）时触发构建
-  workflow_dispatch: # 开启手动触发功能，允许在 GitHub Actions 网页端手动点击按钮触发构建
+      - 'v*'
+  workflow_dispatch:
 
-# 定义全局环境变量
 env:
-  REGISTRY: ghcr.io # 使用 GitHub 官方提供的容器镜像仓库
-  IMAGE_NAME: ${{ github.repository }} # 自动提取"用户名/仓库名"作为最终的镜像名
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
 
-# 定义具体的执行任务
 jobs:
   build-and-push:
-    # 指定运行环境为最新版的 Ubuntu
     runs-on: ubuntu-latest
-    
-    # 声明 GitHub 自动生成的临时 TOKEN (GITHUB_TOKEN) 的权限范围
     permissions:
-      contents: read     # 必须有读取代码仓库的权限
-      packages: write    # 关键权限：必须有向 GitHub Packages 写入和推送镜像的权限
+      contents: read
+      packages: write
 
     steps:
-      # 步骤 1: 拉取当前仓库的代码到构建服务器中
-      - name: 第一步：拉取仓库最新代码
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 步骤 2: 初始化 QEMU 模拟器，用来支持跨 CPU 架构的构建
-      - name: 第二步：初始化 QEMU 模拟器
-        uses: docker/setup-qemu-action@
+      - name: Set up QEMU
+        uses: actions/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=sha,format=short
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
