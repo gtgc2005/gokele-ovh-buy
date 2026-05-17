@@ -1,0 +1,66 @@
+name: Build and Push Docker Image
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  workflow_dispatch: # 支持在 GitHub 页面上点击按钮手动触发构建
+
+env:
+  REGISTRY: ghcr.io
+  # 镜像名称会自动变为：ghcr.io/你的用户名/gokele-ovh-buy
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write # 必须开放 Packages 写入权限
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 设置 QEMU 模拟器以支持多平台构建 (ARM64)
+      - name: Set up QEMU
+        uses: actions/setup-qemu-action@v3
+
+      # 设置 Docker Buildx 构建器
+      - name: Set up Docker Buildx
+        uses: actions/setup-buildx-action@v3
+
+      # 登录到 GitHub 官方容器镜像仓库
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }} # 自动生成，无需手动配置
+
+      # 提取元数据（用于生成标签，例如 latest, v1.0.0 等）
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=sha,format=short
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+
+      # 执行多架构构建并推送到 GHCR，并启用 GitHub Actions 缓存优化
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64 # 同时构建 x86 和甲骨文等 ARM 架构镜像
+          push: true
+          tags: ${{ id.meta.outputs.tags }}
+          labels: ${{ id.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
