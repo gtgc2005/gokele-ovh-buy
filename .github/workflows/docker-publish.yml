@@ -1,66 +1,78 @@
-name: Build and Push Docker Image
+# 工作流的名称，会在 GitHub 仓库的 Actions 界面显示
+name: 自动构建并推送 Docker 镜像
 
+# 定义触发工作流的条件
 on:
   push:
     branches:
-      - main
+      - main     # 当代码被推送 (Push) 到 main 分支时触发构建
     tags:
-      - 'v*'
-  workflow_dispatch: # 支持在 GitHub 页面上点击按钮手动触发构建
+      - 'v*'     # 当推送符合版本格式的标签（如 v1.0.0, v2.1.3）时触发构建
+  workflow_dispatch: # 开启手动触发功能，允许在 GitHub Actions 网页端手动点击按钮触发构建
 
+# 定义全局环境变量
 env:
-  REGISTRY: ghcr.io
-  # 镜像名称会自动变为：ghcr.io/你的用户名/gokele-ovh-buy
-  IMAGE_NAME: ${{ github.repository }}
+  REGISTRY: ghcr.io # 使用 GitHub 官方提供的容器镜像仓库（GitHub Container Registry）
+  IMAGE_NAME: ${{ github.repository }} # 自动提取“用户名/仓库名”作为最终的镜像名
 
+# 定义具体的执行任务
 jobs:
   build-and-push:
+    # 指定运行环境为最新版的 Ubuntu
     runs-on: ubuntu-latest
+    
+    # 声明 GitHub 自动生成的临时 TOKEN (GITHUB_TOKEN) 的权限范围
     permissions:
-      contents: read
-      packages: write # 必须开放 Packages 写入权限
+      contents: read     # 必须有读取代码仓库的权限
+      packages: write    # 关键权限：必须有向 GitHub Packages 写入和推送镜像的权限
 
     steps:
-      - name: Checkout repository
+      # 步骤 1: 拉取当前仓库的代码到构建服务器中
+      - name: 第一步：拉取仓库最新代码
         uses: actions/checkout@v4
 
-      # 设置 QEMU 模拟器以支持多平台构建 (ARM64)
-      - name: Set up QEMU
+      # 步骤 2: 初始化 QEMU 模拟器，用来支持跨 CPU 架构的构建（比如在 x86 的服务器上构建给 ARM64 用的镜像）
+      - name: 第二步：初始化 QEMU 模拟器
         uses: actions/setup-qemu-action@v3
 
-      # 设置 Docker Buildx 构建器
-      - name: Set up Docker Buildx
+      # 步骤 3: 初始化 Docker Buildx，它是 Docker 的下一代构建工具，提供更高级的构建特性（如多阶段并行构建和 Actions 原生缓存）
+      - name: 第三步：初始化 Docker Buildx 构建器
         uses: actions/setup-buildx-action@v3
 
-      # 登录到 GitHub 官方容器镜像仓库
-      - name: Log in to the Container registry
+      # 步骤 4: 登录到 GitHub Packages 容器镜像仓库
+      - name: 第四步：登录到 GitHub 镜像仓库 (GHCR)
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }} # 自动生成，无需手动配置
+          username: ${{ github.actor }} # 自动获取触发本次工作流的 GitHub 用户名
+          # 自动使用 GitHub 注入的临时访问凭证，无需在仓库里手动添加任何 Secrets，安全便捷
+          password: ${{ secrets.GITHUB_TOKEN }} 
 
-      # 提取元数据（用于生成标签，例如 latest, v1.0.0 等）
-      - name: Extract metadata (tags, labels) for Docker
+      # 步骤 5: 自动提取和计算 Docker 镜像的元数据和标签 (Tags)
+      - name: 第五步：提取 Docker 镜像元数据与 Tag 标签
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # 定义生成的镜像标签规则
           tags: |
-            type=ref,event=branch
-            type=semver,pattern={{version}}
-            type=sha,format=short
+            type=ref,event=branch  # 生成分支对应的标签，例如：main
+            type=semver,pattern={{version}}  # 如果有 Tag，生成版本号标签，例如：v1.0.0
+            type=sha,format=short  # 生成简短的 Commit SHA 标签，例如：sha-a1b2c3d
+            # 如果是 main 分支的最新提交，则生成 latest 标签
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
 
-      # 执行多架构构建并推送到 GHCR，并启用 GitHub Actions 缓存优化
-      - name: Build and push Docker image
+      # 步骤 6: 执行多架构的 Docker 镜像构建，并推送至 GHCR，同时启用 GitHub Actions 缓存优化编译速度
+      - name: 第六步：执行多架构构建并推送到 GHCR
         uses: docker/build-push-action@v6
         with:
-          context: .
-          file: ./Dockerfile
-          platforms: linux/amd64,linux/arm64 # 同时构建 x86 和甲骨文等 ARM 架构镜像
-          push: true
-          tags: ${{ id.meta.outputs.tags }}
-          labels: ${{ id.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          context: .               # 指定构建的上下文目录为当前项目根目录
+          file: ./Dockerfile      # 指定 Dockerfile 文件的路径
+          # 同时编译 x86 (AMD64) 和 手机/树莓派/甲骨文云等 (ARM64) 两种 CPU 架构的镜像
+          platforms: linux/amd64,linux/arm64 
+          push: true               # 构建完成后自动推送至镜像仓库
+          tags: ${{ steps.meta.outputs.tags }}     # 绑定步骤 5 自动计算生成的全部 Tag 标签
+          labels: ${{ steps.meta.outputs.labels }}   # 绑定步骤 5 自动提取的元数据标签
+          # 使用 GitHub Actions 的原生网络缓存（gha），极大地加速第二次及以后的重复构建
+          cache-from: type=gha 
+          cache-to: type=gha,mode=max 
